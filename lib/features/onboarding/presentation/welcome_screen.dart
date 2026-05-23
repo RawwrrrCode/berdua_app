@@ -1,8 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/theme.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
@@ -27,7 +25,6 @@ class WelcomeScreen extends StatelessWidget {
                 child: const Icon(Icons.photo_library_outlined,
                     size: 56, color: AppColors.primary),
               ),
-
               const SizedBox(height: 32),
               const Text(
                 'Simpan setiap momen',
@@ -37,47 +34,33 @@ class WelcomeScreen extends StatelessWidget {
               const Text(
                 'Foto, rencana, dan catatan — semua di satu tempat yang cuma kalian punya.',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
+                style:
+                    TextStyle(fontSize: 14, color: AppColors.textSecondary),
               ),
               const Spacer(),
-TextButton(
-  onPressed: () async {
-    try {
-      // Write test doc
-      await FirebaseFirestore.instance
-        .collection('test')
-        .doc('connection')
-        .set({
-          'message': 'Halo Firebase!',
-          'timestamp': FieldValue.serverTimestamp(),
-        });
-
-      // Read kembali
-      final doc = await FirebaseFirestore.instance
-        .collection('test')
-        .doc('connection')
-        .get();
-
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Firebase connected! Data: ${doc.data()}')),
-        );
-      }
-    } catch (e) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error: $e')),
-        );
-      }
-    }
-  },
-  child: const Text('Test Firebase'),
-),
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
                   onPressed: () => context.go('/sign-in'),
-                  child: const Text('Lanjut'),
+                  child: const Text('Masuk'),
+                ),
+              ),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton(
+                  onPressed: () => context.go('/sign-up'),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppColors.primary,
+                    side: const BorderSide(color: AppColors.primary),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 24, vertical: 14),
+                    shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12)),
+                    textStyle: const TextStyle(
+                        fontSize: 14, fontWeight: FontWeight.w500),
+                  ),
+                  child: const Text('Buat akun'),
                 ),
               ),
             ],

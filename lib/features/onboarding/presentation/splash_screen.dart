@@ -1,23 +1,49 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/theme.dart';
+import '../../../features/auth/data/auth_repository.dart';
 
-class SplashScreen extends StatefulWidget {
+class SplashScreen extends ConsumerStatefulWidget {
   const SplashScreen({super.key});
 
   @override
-  State<SplashScreen> createState() => _SplashScreenState();
+  ConsumerState<SplashScreen> createState() => _SplashScreenState();
 }
 
-class _SplashScreenState extends State<SplashScreen> {
+class _SplashScreenState extends ConsumerState<SplashScreen> {
   @override
   void initState() {
     super.initState();
-    // Auto navigate ke welcome setelah 1.5 detik
-    Timer(const Duration(milliseconds: 1500), () {
-      if (mounted) context.go('/welcome');
-    });
+    Timer(const Duration(milliseconds: 1500), _navigate);
+  }
+
+  void _navigate() {
+    if (!mounted) return;
+    final authState = ref.read(authStateProvider);
+    authState.when(
+      data: (user) {
+        if (user != null) {
+          // Cek apakah user sudah pair atau belum
+          ref.read(currentUserProvider).when(
+            data: (appUser) {
+              if (appUser?.coupleId != null) {
+                context.go('/home');
+              } else {
+                context.go('/onboarding/anniversary');
+              }
+            },
+            loading: () => context.go('/home'),
+            error: (_, __) => context.go('/welcome'),
+          );
+        } else {
+          context.go('/welcome');
+        }
+      },
+      loading: () => context.go('/welcome'),
+      error: (_, __) => context.go('/welcome'),
+    );
   }
 
   @override
@@ -31,7 +57,7 @@ class _SplashScreenState extends State<SplashScreen> {
             Container(
               width: 80,
               height: 80,
-              decoration: BoxDecoration(
+              decoration: const BoxDecoration(
                 color: AppColors.primaryLight,
                 shape: BoxShape.circle,
               ),
