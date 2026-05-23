@@ -5,15 +5,12 @@ import 'firebase_options.dart';
 import 'app/app.dart';
 
 void main() async {
-  // Pastikan binding sudah siap sebelum init Firebase
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Init Firebase
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
 
-  // Run app dengan Riverpod scope
   runApp(
     const ProviderScope(
       child: BerduaApp(),

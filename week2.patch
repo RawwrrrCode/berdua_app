@@ -1,0 +1,2090 @@
+From a8bb53ee16a36843a28d2d59b67c43481a4b8d25 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 23 May 2026 12:32:04 +0000
+Subject: [PATCH] feat: Week 2 - auth flow, models, routing dengan auth guard
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Perbaikan Minggu 1:
+- .gitignore: tambah firebase config, signing files, .env
+- android minSdk di-set ke 21 (Firebase requirement)
+- Hapus tombol Test Firebase dari welcome_screen
+- welcome_screen: pisah tombol Masuk dan Buat Akun
+
+Minggu 2 - Auth & Onboarding:
+- AppUser model dengan fromFirestore/toFirestore/copyWith
+- AuthService: email/password + Google Sign-In + reset password
+- FirestoreService: wrapper koleksi Firestore
+- AuthRepository: sign up/in (buat user doc otomatis), Google sign-in
+- Riverpod providers: authStateProvider, currentUserProvider
+- SignInScreen: UI lengkap, Google Sign-In, forgot password dialog
+- SignUpScreen: UI lengkap dengan validasi
+- AnniversaryScreen: date picker + preview counter hari
+- InvitePartnerScreen: tampilkan kode + input kode partner (stub)
+- routes.dart: auth guard redirect (login → home/onboarding, logout → welcome)
+- app.dart: flutter_localizations untuk date picker Bahasa Indonesia
+- core/utils: Validators, DateHelpers (milestone calculator)
+- core/widgets: PrimaryButton, OutlineButton
+
+https://claude.ai/code/session_01Cb9QJKUELPERrCvGVFAEpD
+---
+ .gitignore                                    |  14 +
+ android/app/build.gradle.kts                  |   2 +-
+ lib/app/app.dart                              |  16 +-
+ lib/app/routes.dart                           |  46 ++-
+ lib/core/models/app_user.dart                 | 104 ++++++
+ lib/core/services/auth_service.dart           |  53 +++
+ lib/core/services/firestore_service.dart      |  25 ++
+ lib/core/utils/date_helpers.dart              |  67 ++++
+ lib/core/utils/validators.dart                |  32 ++
+ lib/core/widgets/primary_button.dart          |  90 +++++
+ lib/features/auth/data/auth_repository.dart   | 125 +++++++
+ .../auth/presentation/sign_in_screen.dart     | 352 +++++++++++++++++-
+ .../auth/presentation/sign_up_screen.dart     | 251 +++++++++++++
+ .../presentation/anniversary_screen.dart      | 251 +++++++++++++
+ .../presentation/invite_partner_screen.dart   | 243 ++++++++++++
+ .../presentation/splash_screen.dart           |  44 ++-
+ .../presentation/welcome_screen.dart          |  61 ++-
+ lib/main.dart                                 |   5 +-
+ pubspec.yaml                                  |   2 +
+ 19 files changed, 1718 insertions(+), 65 deletions(-)
+ create mode 100644 lib/core/models/app_user.dart
+ create mode 100644 lib/core/services/auth_service.dart
+ create mode 100644 lib/core/services/firestore_service.dart
+ create mode 100644 lib/core/utils/date_helpers.dart
+ create mode 100644 lib/core/utils/validators.dart
+ create mode 100644 lib/core/widgets/primary_button.dart
+ create mode 100644 lib/features/auth/data/auth_repository.dart
+ create mode 100644 lib/features/auth/presentation/sign_up_screen.dart
+ create mode 100644 lib/features/onboarding/presentation/anniversary_screen.dart
+ create mode 100644 lib/features/onboarding/presentation/invite_partner_screen.dart
+
+diff --git a/.gitignore b/.gitignore
+index 3820a95..6d0cb3e 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -43,3 +43,17 @@ app.*.map.json
+ /android/app/debug
+ /android/app/profile
+ /android/app/release
++
++# Firebase config (sensitive — jangan commit ke public repo)
++android/app/google-services.json
++ios/Runner/GoogleService-Info.plist
++lib/firebase_options.dart
++
++# Environment
++.env
++.env.local
++
++# Android signing
++android/key.properties
++*.jks
++*.keystore
+diff --git a/android/app/build.gradle.kts b/android/app/build.gradle.kts
+index 082f81d..8154834 100644
+--- a/android/app/build.gradle.kts
++++ b/android/app/build.gradle.kts
+@@ -28,7 +28,7 @@ android {
+         applicationId = "com.berdua.berdua"
+         // You can update the following values to match your application needs.
+         // For more information, see: https://flutter.dev/to/review-gradle-config.
+-        minSdk = flutter.minSdkVersion
++        minSdk = 21
+         targetSdk = flutter.targetSdkVersion
+         versionCode = flutter.versionCode
+         versionName = flutter.versionName
+diff --git a/lib/app/app.dart b/lib/app/app.dart
+index ab814b9..db66c3e 100644
+--- a/lib/app/app.dart
++++ b/lib/app/app.dart
+@@ -1,4 +1,5 @@
+ import 'package:flutter/material.dart';
++import 'package:flutter_localizations/flutter_localizations.dart';
+ import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'routes.dart';
+ import 'theme.dart';
+@@ -8,11 +9,22 @@ class BerduaApp extends ConsumerWidget {
+ 
+   @override
+   Widget build(BuildContext context, WidgetRef ref) {
++    final router = ref.watch(routerProvider);
+     return MaterialApp.router(
+       title: 'Berdua',
+       debugShowCheckedModeBanner: false,
+       theme: AppTheme.light,
+-      routerConfig: AppRouter.router,
++      routerConfig: router,
++      locale: const Locale('id', 'ID'),
++      supportedLocales: const [
++        Locale('id', 'ID'),
++        Locale('en', 'US'),
++      ],
++      localizationsDelegates: const [
++        GlobalMaterialLocalizations.delegate,
++        GlobalWidgetsLocalizations.delegate,
++        GlobalCupertinoLocalizations.delegate,
++      ],
+     );
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/lib/app/routes.dart b/lib/app/routes.dart
+index 604d220..693c7c4 100644
+--- a/lib/app/routes.dart
++++ b/lib/app/routes.dart
+@@ -1,13 +1,37 @@
+ import 'package:flutter/material.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:go_router/go_router.dart';
+-import '../features/onboarding/presentation/splash_screen.dart';
+-import '../features/onboarding/presentation/welcome_screen.dart';
++import '../features/auth/data/auth_repository.dart';
+ import '../features/auth/presentation/sign_in_screen.dart';
++import '../features/auth/presentation/sign_up_screen.dart';
+ import '../features/home/presentation/home_screen.dart';
++import '../features/onboarding/presentation/anniversary_screen.dart';
++import '../features/onboarding/presentation/invite_partner_screen.dart';
++import '../features/onboarding/presentation/splash_screen.dart';
++import '../features/onboarding/presentation/welcome_screen.dart';
+ 
+-class AppRouter {
+-  static final router = GoRouter(
++final routerProvider = Provider<GoRouter>((ref) {
++  final authState = ref.watch(authStateProvider);
++
++  return GoRouter(
+     initialLocation: '/splash',
++    redirect: (context, state) {
++      final isLoggedIn = authState.valueOrNull != null;
++      final loc = state.uri.path;
++
++      // Saat auth masih loading, jangan redirect
++      if (authState.isLoading) return null;
++
++      // Route yang tidak butuh auth
++      final publicRoutes = ['/splash', '/welcome', '/sign-in', '/sign-up'];
++      final isPublic = publicRoutes.any((r) => loc.startsWith(r));
++
++      if (!isLoggedIn && !isPublic) return '/welcome';
++      if (isLoggedIn && (loc == '/welcome' || loc == '/sign-in' || loc == '/sign-up')) {
++        return '/home';
++      }
++      return null;
++    },
+     routes: [
+       GoRoute(
+         path: '/splash',
+@@ -21,6 +45,18 @@ class AppRouter {
+         path: '/sign-in',
+         builder: (context, state) => const SignInScreen(),
+       ),
++      GoRoute(
++        path: '/sign-up',
++        builder: (context, state) => const SignUpScreen(),
++      ),
++      GoRoute(
++        path: '/onboarding/anniversary',
++        builder: (context, state) => const AnniversaryScreen(),
++      ),
++      GoRoute(
++        path: '/onboarding/invite-partner',
++        builder: (context, state) => const InvitePartnerScreen(),
++      ),
+       GoRoute(
+         path: '/home',
+         builder: (context, state) => const HomeScreen(),
+@@ -32,4 +68,4 @@ class AppRouter {
+       ),
+     ),
+   );
+-}
+\ No newline at end of file
++});
+diff --git a/lib/core/models/app_user.dart b/lib/core/models/app_user.dart
+new file mode 100644
+index 0000000..afe6ec2
+--- /dev/null
++++ b/lib/core/models/app_user.dart
+@@ -0,0 +1,104 @@
++import 'package:cloud_firestore/cloud_firestore.dart';
++
++class AppUser {
++  final String uid;
++  final String email;
++  final String displayName;
++  final String? photoUrl;
++  final String initials;
++  final String? coupleId;
++  final bool isPremium;
++  final Timestamp createdAt;
++  final Timestamp updatedAt;
++  final Map<String, dynamic> preferences;
++  final String locale;
++  final String appVersion;
++
++  const AppUser({
++    required this.uid,
++    required this.email,
++    required this.displayName,
++    required this.initials,
++    this.photoUrl,
++    this.coupleId,
++    this.isPremium = false,
++    required this.createdAt,
++    required this.updatedAt,
++    this.preferences = const {
++      'notifEnabled': true,
++      'theme': 'warm',
++    },
++    this.locale = 'id-ID',
++    this.appVersion = '0.1.0',
++  });
++
++  factory AppUser.fromFirestore(DocumentSnapshot doc) {
++    final data = doc.data() as Map<String, dynamic>;
++    return AppUser(
++      uid: doc.id,
++      email: data['email'] ?? '',
++      displayName: data['displayName'] ?? '',
++      initials: data['initials'] ?? '',
++      photoUrl: data['photoUrl'],
++      coupleId: data['coupleId'],
++      isPremium: data['isPremium'] ?? false,
++      createdAt: data['createdAt'] ?? Timestamp.now(),
++      updatedAt: data['updatedAt'] ?? Timestamp.now(),
++      preferences: Map<String, dynamic>.from(data['preferences'] ?? {}),
++      locale: data['locale'] ?? 'id-ID',
++      appVersion: data['appVersion'] ?? '0.1.0',
++    );
++  }
++
++  Map<String, dynamic> toFirestore() {
++    return {
++      'email': email,
++      'displayName': displayName,
++      'initials': initials,
++      'photoUrl': photoUrl,
++      'coupleId': coupleId,
++      'isPremium': isPremium,
++      'premiumExpiry': null,
++      'premiumPurchasedAt': null,
++      'createdAt': createdAt,
++      'updatedAt': updatedAt,
++      'preferences': preferences,
++      'locale': locale,
++      'appVersion': appVersion,
++      'fcmTokens': [],
++    };
++  }
++
++  AppUser copyWith({
++    String? displayName,
++    String? photoUrl,
++    String? initials,
++    String? coupleId,
++    bool? isPremium,
++    Map<String, dynamic>? preferences,
++  }) {
++    return AppUser(
++      uid: uid,
++      email: email,
++      displayName: displayName ?? this.displayName,
++      initials: initials ?? this.initials,
++      photoUrl: photoUrl ?? this.photoUrl,
++      coupleId: coupleId ?? this.coupleId,
++      isPremium: isPremium ?? this.isPremium,
++      createdAt: createdAt,
++      updatedAt: Timestamp.now(),
++      preferences: preferences ?? this.preferences,
++      locale: locale,
++      appVersion: appVersion,
++    );
++  }
++
++  static String generateInitials(String name) {
++    if (name.isEmpty) return '?';
++    final parts = name.trim().split(' ');
++    if (parts.length >= 2) {
++      return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
++    }
++    return name[0].toUpperCase();
++  }
++}
+diff --git a/lib/core/services/auth_service.dart b/lib/core/services/auth_service.dart
+new file mode 100644
+index 0000000..7330a69
+--- /dev/null
++++ b/lib/core/services/auth_service.dart
+@@ -0,0 +1,53 @@
++import 'package:firebase_auth/firebase_auth.dart';
++import 'package:google_sign_in/google_sign_in.dart';
++
++class AuthService {
++  final FirebaseAuth _auth = FirebaseAuth.instance;
++  final GoogleSignIn _googleSignIn = GoogleSignIn();
++
++  User? get currentUser => _auth.currentUser;
++  Stream<User?> get authStateChanges => _auth.authStateChanges();
++
++  Future<UserCredential> signUpWithEmail({
++    required String email,
++    required String password,
++  }) async {
++    return await _auth.createUserWithEmailAndPassword(
++      email: email,
++      password: password,
++    );
++  }
++
++  Future<UserCredential> signInWithEmail({
++    required String email,
++    required String password,
++  }) async {
++    return await _auth.signInWithEmailAndPassword(
++      email: email,
++      password: password,
++    );
++  }
++
++  Future<UserCredential?> signInWithGoogle() async {
++    final googleUser = await _googleSignIn.signIn();
++    if (googleUser == null) return null;
++
++    final googleAuth = await googleUser.authentication;
++    final credential = GoogleAuthProvider.credential(
++      accessToken: googleAuth.accessToken,
++      idToken: googleAuth.idToken,
++    );
++    return await _auth.signInWithCredential(credential);
++  }
++
++  Future<void> signOut() async {
++    await Future.wait([
++      _auth.signOut(),
++      _googleSignIn.signOut(),
++    ]);
++  }
++
++  Future<void> sendPasswordResetEmail(String email) async {
++    await _auth.sendPasswordResetEmail(email: email);
++  }
++}
+diff --git a/lib/core/services/firestore_service.dart b/lib/core/services/firestore_service.dart
+new file mode 100644
+index 0000000..705f0e1
+--- /dev/null
++++ b/lib/core/services/firestore_service.dart
+@@ -0,0 +1,25 @@
++import 'package:cloud_firestore/cloud_firestore.dart';
++
++class FirestoreService {
++  final FirebaseFirestore _db = FirebaseFirestore.instance;
++
++  CollectionReference get users => _db.collection('users');
++  CollectionReference get couples => _db.collection('couples');
++  CollectionReference get questions => _db.collection('questions');
++  CollectionReference get inviteCodes => _db.collection('inviteCodes');
++  CollectionReference get config => _db.collection('config');
++
++  CollectionReference memories(String coupleId) =>
++      _db.collection('couples').doc(coupleId).collection('memories');
++
++  CollectionReference events(String coupleId) =>
++      _db.collection('couples').doc(coupleId).collection('events');
++
++  CollectionReference dailyAnswers(String coupleId) =>
++      _db.collection('couples').doc(coupleId).collection('dailyAnswers');
++
++  Future<void> runTransaction(
++      Future<void> Function(Transaction tx) handler) async {
++    await _db.runTransaction(handler);
++  }
++}
+diff --git a/lib/core/utils/date_helpers.dart b/lib/core/utils/date_helpers.dart
+new file mode 100644
+index 0000000..b0fa9c8
+--- /dev/null
++++ b/lib/core/utils/date_helpers.dart
+@@ -0,0 +1,67 @@
++import 'package:intl/intl.dart';
++
++class DateHelpers {
++  static String formatDate(DateTime date) {
++    return DateFormat('d MMMM yyyy', 'id_ID').format(date);
++  }
++
++  static String formatShort(DateTime date) {
++    return DateFormat('d MMM yyyy', 'id_ID').format(date);
++  }
++
++  static int daysBetween(DateTime from, DateTime to) {
++    final fromDate = DateTime(from.year, from.month, from.day);
++    final toDate = DateTime(to.year, to.month, to.day);
++    return toDate.difference(fromDate).inDays;
++  }
++
++  static int daysSince(DateTime date) {
++    return daysBetween(date, DateTime.now());
++  }
++
++  static String daysLabel(int days) {
++    if (days == 0) return 'hari ini';
++    if (days == 1) return '1 hari';
++    return '$days hari';
++  }
++
++  // Hitung milestone berikutnya dari anniversary
++  static Map<String, dynamic>? nextMilestone(DateTime anniversary) {
++    final milestones = [
++      30, 50, 100, 150, 200, 250, 300, 365,
++      500, 730, 1000, 1095, 1460, 1825,
++    ];
++    final labels = {
++      30: '30 hari',
++      50: '50 hari',
++      100: '100 hari',
++      150: '150 hari',
++      200: '200 hari',
++      250: '250 hari',
++      300: '300 hari',
++      365: '1 tahun',
++      500: '500 hari',
++      730: '2 tahun',
++      1000: '1000 hari',
++      1095: '3 tahun',
++      1460: '4 tahun',
++      1825: '5 tahun',
++    };
++
++    final today = DateTime.now();
++    final days = daysBetween(anniversary, today);
++
++    for (final milestone in milestones) {
++      if (days < milestone) {
++        final milestoneDate = anniversary.add(Duration(days: milestone));
++        return {
++          'day': milestone,
++          'date': milestoneDate,
++          'label': labels[milestone] ?? '$milestone hari',
++          'daysLeft': milestone - days,
++        };
++      }
++    }
++    return null;
++  }
++}
+diff --git a/lib/core/utils/validators.dart b/lib/core/utils/validators.dart
+new file mode 100644
+index 0000000..7530116
+--- /dev/null
++++ b/lib/core/utils/validators.dart
+@@ -0,0 +1,32 @@
++class Validators {
++  static String? email(String? value) {
++    if (value == null || value.trim().isEmpty) return 'Email tidak boleh kosong';
++    final regex = RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,4}$');
++    if (!regex.hasMatch(value.trim())) return 'Format email tidak valid';
++    return null;
++  }
++
++  static String? password(String? value) {
++    if (value == null || value.isEmpty) return 'Password tidak boleh kosong';
++    if (value.length < 8) return 'Password minimal 8 karakter';
++    return null;
++  }
++
++  static String? confirmPassword(String? value, String password) {
++    if (value == null || value.isEmpty) return 'Konfirmasi password wajib diisi';
++    if (value != password) return 'Password tidak cocok';
++    return null;
++  }
++
++  static String? displayName(String? value) {
++    if (value == null || value.trim().isEmpty) return 'Nama tidak boleh kosong';
++    if (value.trim().length < 2) return 'Nama minimal 2 karakter';
++    if (value.trim().length > 30) return 'Nama maksimal 30 karakter';
++    return null;
++  }
++
++  static String? required(String? value, String fieldName) {
++    if (value == null || value.trim().isEmpty) return '$fieldName wajib diisi';
++    return null;
++  }
++}
+diff --git a/lib/core/widgets/primary_button.dart b/lib/core/widgets/primary_button.dart
+new file mode 100644
+index 0000000..d4f9607
+--- /dev/null
++++ b/lib/core/widgets/primary_button.dart
+@@ -0,0 +1,90 @@
++import 'package:flutter/material.dart';
++import '../../app/theme.dart';
++
++class PrimaryButton extends StatelessWidget {
++  const PrimaryButton({
++    super.key,
++    required this.label,
++    required this.onPressed,
++    this.isLoading = false,
++    this.icon,
++  });
++
++  final String label;
++  final VoidCallback? onPressed;
++  final bool isLoading;
++  final Widget? icon;
++
++  @override
++  Widget build(BuildContext context) {
++    return SizedBox(
++      width: double.infinity,
++      child: ElevatedButton(
++        onPressed: isLoading ? null : onPressed,
++        child: isLoading
++            ? const SizedBox(
++                height: 20,
++                width: 20,
++                child: CircularProgressIndicator(
++                  strokeWidth: 2,
++                  color: AppColors.primaryLight,
++                ),
++              )
++            : icon != null
++                ? Row(
++                    mainAxisAlignment: MainAxisAlignment.center,
++                    children: [icon!, const SizedBox(width: 8), Text(label)],
++                  )
++                : Text(label),
++      ),
++    );
++  }
++}
++
++class OutlineButton extends StatelessWidget {
++  const OutlineButton({
++    super.key,
++    required this.label,
++    required this.onPressed,
++    this.isLoading = false,
++    this.icon,
++  });
++
++  final String label;
++  final VoidCallback? onPressed;
++  final bool isLoading;
++  final Widget? icon;
++
++  @override
++  Widget build(BuildContext context) {
++    return SizedBox(
++      width: double.infinity,
++      child: OutlinedButton(
++        onPressed: isLoading ? null : onPressed,
++        style: OutlinedButton.styleFrom(
++          foregroundColor: AppColors.primary,
++          side: const BorderSide(color: AppColors.primary),
++          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
++          shape: RoundedRectangleBorder(
++            borderRadius: BorderRadius.circular(12),
++          ),
++        ),
++        child: isLoading
++            ? const SizedBox(
++                height: 20,
++                width: 20,
++                child: CircularProgressIndicator(
++                  strokeWidth: 2,
++                  color: AppColors.primary,
++                ),
++              )
++            : icon != null
++                ? Row(
++                    mainAxisAlignment: MainAxisAlignment.center,
++                    children: [icon!, const SizedBox(width: 8), Text(label)],
++                  )
++                : Text(label),
++      ),
++    );
++  }
++}
+diff --git a/lib/features/auth/data/auth_repository.dart b/lib/features/auth/data/auth_repository.dart
+new file mode 100644
+index 0000000..d0d899e
+--- /dev/null
++++ b/lib/features/auth/data/auth_repository.dart
+@@ -0,0 +1,125 @@
++import 'package:cloud_firestore/cloud_firestore.dart';
++import 'package:firebase_auth/firebase_auth.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import '../../../core/models/app_user.dart';
++import '../../../core/services/auth_service.dart';
++import '../../../core/services/firestore_service.dart';
++
++final authServiceProvider = Provider<AuthService>((ref) => AuthService());
++final firestoreServiceProvider =
++    Provider<FirestoreService>((ref) => FirestoreService());
++
++final authRepositoryProvider = Provider<AuthRepository>((ref) {
++  return AuthRepository(
++    authService: ref.watch(authServiceProvider),
++    firestoreService: ref.watch(firestoreServiceProvider),
++  );
++});
++
++// Riverpod stream: current Firebase user (null = not logged in)
++final authStateProvider = StreamProvider<User?>((ref) {
++  return ref.watch(authServiceProvider).authStateChanges;
++});
++
++// Riverpod: current AppUser doc from Firestore
++final currentUserProvider = StreamProvider<AppUser?>((ref) {
++  final authState = ref.watch(authStateProvider);
++  return authState.when(
++    data: (user) {
++      if (user == null) return Stream.value(null);
++      return ref
++          .watch(firestoreServiceProvider)
++          .users
++          .doc(user.uid)
++          .snapshots()
++          .map((doc) => doc.exists ? AppUser.fromFirestore(doc) : null);
++    },
++    loading: () => Stream.value(null),
++    error: (_, __) => Stream.value(null),
++  );
++});
++
++class AuthRepository {
++  AuthRepository({
++    required this.authService,
++    required this.firestoreService,
++  });
++
++  final AuthService authService;
++  final FirestoreService firestoreService;
++
++  Future<AppUser> signUpWithEmail({
++    required String email,
++    required String password,
++    required String displayName,
++  }) async {
++    final credential = await authService.signUpWithEmail(
++      email: email,
++      password: password,
++    );
++    final user = credential.user!;
++
++    // Update display name di Firebase Auth
++    await user.updateDisplayName(displayName);
++
++    // Buat user doc di Firestore
++    final appUser = AppUser(
++      uid: user.uid,
++      email: email,
++      displayName: displayName,
++      initials: AppUser.generateInitials(displayName),
++      coupleId: null,
++      createdAt: Timestamp.now(),
++      updatedAt: Timestamp.now(),
++    );
++
++    await firestoreService.users.doc(user.uid).set(appUser.toFirestore());
++    return appUser;
++  }
++
++  Future<AppUser?> signInWithEmail({
++    required String email,
++    required String password,
++  }) async {
++    final credential = await authService.signInWithEmail(
++      email: email,
++      password: password,
++    );
++    final user = credential.user!;
++    final doc = await firestoreService.users.doc(user.uid).get();
++    if (!doc.exists) return null;
++    return AppUser.fromFirestore(doc);
++  }
++
++  Future<AppUser?> signInWithGoogle() async {
++    final credential = await authService.signInWithGoogle();
++    if (credential == null) return null;
++
++    final user = credential.user!;
++    final docRef = firestoreService.users.doc(user.uid);
++    final doc = await docRef.get();
++
++    // Kalau user baru (first time Google sign-in), buat doc
++    if (!doc.exists) {
++      final displayName = user.displayName ?? 'Pengguna';
++      final appUser = AppUser(
++        uid: user.uid,
++        email: user.email ?? '',
++        displayName: displayName,
++        initials: AppUser.generateInitials(displayName),
++        photoUrl: user.photoURL,
++        coupleId: null,
++        createdAt: Timestamp.now(),
++        updatedAt: Timestamp.now(),
++      );
++      await docRef.set(appUser.toFirestore());
++      return appUser;
++    }
++
++    return AppUser.fromFirestore(doc);
++  }
++
++  Future<void> signOut() async {
++    await authService.signOut();
++  }
++}
+diff --git a/lib/features/auth/presentation/sign_in_screen.dart b/lib/features/auth/presentation/sign_in_screen.dart
+index 5ef878e..567c751 100644
+--- a/lib/features/auth/presentation/sign_in_screen.dart
++++ b/lib/features/auth/presentation/sign_in_screen.dart
+@@ -1,16 +1,358 @@
+ import 'package:flutter/material.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:go_router/go_router.dart';
+ import '../../../app/theme.dart';
++import '../../../core/utils/validators.dart';
++import '../../../core/widgets/primary_button.dart';
++import '../data/auth_repository.dart';
+ 
+-class SignInScreen extends StatelessWidget {
++class SignInScreen extends ConsumerStatefulWidget {
+   const SignInScreen({super.key});
+ 
++  @override
++  ConsumerState<SignInScreen> createState() => _SignInScreenState();
++}
++
++class _SignInScreenState extends ConsumerState<SignInScreen> {
++  final _formKey = GlobalKey<FormState>();
++  final _emailCtrl = TextEditingController();
++  final _passwordCtrl = TextEditingController();
++
++  bool _isLoading = false;
++  bool _isGoogleLoading = false;
++  bool _obscurePassword = true;
++  String? _errorMessage;
++
++  @override
++  void dispose() {
++    _emailCtrl.dispose();
++    _passwordCtrl.dispose();
++    super.dispose();
++  }
++
++  Future<void> _signIn() async {
++    if (!_formKey.currentState!.validate()) return;
++    setState(() {
++      _isLoading = true;
++      _errorMessage = null;
++    });
++
++    try {
++      final user = await ref.read(authRepositoryProvider).signInWithEmail(
++            email: _emailCtrl.text.trim(),
++            password: _passwordCtrl.text,
++          );
++      if (!mounted) return;
++
++      // Redirect berdasarkan status couple
++      if (user?.coupleId != null) {
++        context.go('/home');
++      } else {
++        context.go('/onboarding/anniversary');
++      }
++    } on Exception catch (e) {
++      setState(() => _errorMessage = _friendlyError(e.toString()));
++    } finally {
++      if (mounted) setState(() => _isLoading = false);
++    }
++  }
++
++  Future<void> _signInWithGoogle() async {
++    setState(() {
++      _isGoogleLoading = true;
++      _errorMessage = null;
++    });
++
++    try {
++      final user = await ref.read(authRepositoryProvider).signInWithGoogle();
++      if (!mounted) return;
++      if (user == null) return; // user cancel
++
++      if (user.coupleId != null) {
++        context.go('/home');
++      } else {
++        context.go('/onboarding/anniversary');
++      }
++    } on Exception catch (e) {
++      setState(() => _errorMessage = _friendlyError(e.toString()));
++    } finally {
++      if (mounted) setState(() => _isGoogleLoading = false);
++    }
++  }
++
++  String _friendlyError(String raw) {
++    if (raw.contains('user-not-found') ||
++        raw.contains('wrong-password') ||
++        raw.contains('invalid-credential')) {
++      return 'Email atau password salah.';
++    }
++    if (raw.contains('too-many-requests')) {
++      return 'Terlalu banyak percobaan. Coba lagi beberapa menit.';
++    }
++    if (raw.contains('network-request-failed')) {
++      return 'Tidak ada koneksi internet. Coba lagi.';
++    }
++    if (raw.contains('user-disabled')) {
++      return 'Akun kamu dinonaktifkan. Hubungi support.';
++    }
++    return 'Terjadi kesalahan. Coba lagi.';
++  }
++
+   @override
+   Widget build(BuildContext context) {
+-    return const Scaffold(
++    return Scaffold(
+       backgroundColor: AppColors.background,
+-      body: Center(
+-        child: Text('Sign In Screen (TODO minggu 2)'),
++      appBar: AppBar(
++        backgroundColor: AppColors.background,
++        elevation: 0,
++        leading: IconButton(
++          icon: const Icon(Icons.arrow_back, color: AppColors.textPrimary),
++          onPressed: () => context.go('/welcome'),
++        ),
++      ),
++      body: SafeArea(
++        child: SingleChildScrollView(
++          padding: const EdgeInsets.all(24),
++          child: Form(
++            key: _formKey,
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                const SizedBox(height: 8),
++                const Text(
++                  'Masuk',
++                  style: TextStyle(
++                    fontSize: 24,
++                    fontWeight: FontWeight.w600,
++                    color: AppColors.textPrimary,
++                  ),
++                ),
++                const SizedBox(height: 8),
++                const Text(
++                  'Selamat datang kembali.',
++                  style: TextStyle(
++                    fontSize: 14,
++                    color: AppColors.textSecondary,
++                  ),
++                ),
++                const SizedBox(height: 32),
++
++                // Error banner
++                if (_errorMessage != null) ...[
++                  Container(
++                    width: double.infinity,
++                    padding: const EdgeInsets.all(12),
++                    decoration: BoxDecoration(
++                      color: AppColors.error.withOpacity(0.1),
++                      borderRadius: BorderRadius.circular(12),
++                      border: Border.all(
++                          color: AppColors.error.withOpacity(0.3)),
++                    ),
++                    child: Text(
++                      _errorMessage!,
++                      style: const TextStyle(
++                          color: AppColors.error, fontSize: 13),
++                    ),
++                  ),
++                  const SizedBox(height: 20),
++                ],
++
++                // Google sign-in button
++                OutlineButton(
++                  label: 'Lanjut dengan Google',
++                  onPressed: _signInWithGoogle,
++                  isLoading: _isGoogleLoading,
++                  icon: Image.asset(
++                    'assets/icons/google_logo.png',
++                    height: 18,
++                    errorBuilder: (_, __, ___) => const Icon(
++                      Icons.g_mobiledata,
++                      size: 20,
++                      color: AppColors.primary,
++                    ),
++                  ),
++                ),
++                const SizedBox(height: 20),
++
++                // Divider
++                Row(
++                  children: [
++                    const Expanded(
++                        child: Divider(color: AppColors.border, thickness: 1)),
++                    Padding(
++                      padding: const EdgeInsets.symmetric(horizontal: 12),
++                      child: Text(
++                        'atau',
++                        style: TextStyle(
++                          fontSize: 12,
++                          color: AppColors.textTertiary,
++                        ),
++                      ),
++                    ),
++                    const Expanded(
++                        child: Divider(color: AppColors.border, thickness: 1)),
++                  ],
++                ),
++                const SizedBox(height: 20),
++
++                // Email
++                const Text('Email',
++                    style: TextStyle(
++                        fontSize: 13,
++                        fontWeight: FontWeight.w500,
++                        color: AppColors.textPrimary)),
++                const SizedBox(height: 6),
++                TextFormField(
++                  controller: _emailCtrl,
++                  keyboardType: TextInputType.emailAddress,
++                  autocorrect: false,
++                  decoration: const InputDecoration(hintText: 'email@kamu.com'),
++                  validator: Validators.email,
++                  textInputAction: TextInputAction.next,
++                ),
++                const SizedBox(height: 16),
++
++                // Password
++                Row(
++                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
++                  children: [
++                    const Text('Password',
++                        style: TextStyle(
++                            fontSize: 13,
++                            fontWeight: FontWeight.w500,
++                            color: AppColors.textPrimary)),
++                    TextButton(
++                      onPressed: _showForgotPassword,
++                      style: TextButton.styleFrom(
++                        padding: EdgeInsets.zero,
++                        minimumSize: Size.zero,
++                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
++                      ),
++                      child: const Text(
++                        'Lupa password?',
++                        style: TextStyle(
++                            fontSize: 12, color: AppColors.primary),
++                      ),
++                    ),
++                  ],
++                ),
++                const SizedBox(height: 6),
++                TextFormField(
++                  controller: _passwordCtrl,
++                  obscureText: _obscurePassword,
++                  decoration: InputDecoration(
++                    hintText: 'Password kamu',
++                    suffixIcon: IconButton(
++                      icon: Icon(_obscurePassword
++                          ? Icons.visibility_off_outlined
++                          : Icons.visibility_outlined),
++                      color: AppColors.textTertiary,
++                      onPressed: () => setState(
++                          () => _obscurePassword = !_obscurePassword),
++                    ),
++                  ),
++                  validator: (v) => v == null || v.isEmpty
++                      ? 'Password tidak boleh kosong'
++                      : null,
++                  textInputAction: TextInputAction.done,
++                  onFieldSubmitted: (_) => _signIn(),
++                ),
++                const SizedBox(height: 32),
++
++                PrimaryButton(
++                  label: 'Masuk',
++                  onPressed: _signIn,
++                  isLoading: _isLoading,
++                ),
++                const SizedBox(height: 16),
++
++                Center(
++                  child: TextButton(
++                    onPressed: () => context.go('/sign-up'),
++                    child: const Text.rich(
++                      TextSpan(
++                        text: 'Belum punya akun? ',
++                        style: TextStyle(
++                            color: AppColors.textSecondary, fontSize: 13),
++                        children: [
++                          TextSpan(
++                            text: 'Daftar',
++                            style: TextStyle(
++                                color: AppColors.primary,
++                                fontWeight: FontWeight.w500),
++                          ),
++                        ],
++                      ),
++                    ),
++                  ),
++                ),
++              ],
++            ),
++          ),
++        ),
++      ),
++    );
++  }
++
++  void _showForgotPassword() {
++    final emailCtrl = TextEditingController();
++    showDialog(
++      context: context,
++      builder: (ctx) => AlertDialog(
++        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
++        title: const Text('Reset password', style: TextStyle(fontSize: 18)),
++        content: Column(
++          mainAxisSize: MainAxisSize.min,
++          crossAxisAlignment: CrossAxisAlignment.start,
++          children: [
++            const Text(
++              'Masukkan email kamu, kami akan kirim link reset password.',
++              style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
++            ),
++            const SizedBox(height: 16),
++            TextField(
++              controller: emailCtrl,
++              keyboardType: TextInputType.emailAddress,
++              decoration: const InputDecoration(hintText: 'email@kamu.com'),
++            ),
++          ],
++        ),
++        actions: [
++          TextButton(
++            onPressed: () => Navigator.pop(ctx),
++            child: const Text('Batal',
++                style: TextStyle(color: AppColors.textSecondary)),
++          ),
++          TextButton(
++            onPressed: () async {
++              final email = emailCtrl.text.trim();
++              if (email.isEmpty) return;
++              Navigator.pop(ctx);
++              try {
++                await ref
++                    .read(authServiceProvider)
++                    .sendPasswordResetEmail(email);
++                if (mounted) {
++                  ScaffoldMessenger.of(context).showSnackBar(
++                    const SnackBar(
++                        content:
++                            Text('Link reset password sudah dikirim ke email kamu.')),
++                  );
++                }
++              } catch (_) {
++                if (mounted) {
++                  ScaffoldMessenger.of(context).showSnackBar(
++                    const SnackBar(
++                        content: Text('Gagal kirim email. Coba lagi.')),
++                  );
++                }
++              }
++            },
++            child: const Text('Kirim',
++                style: TextStyle(color: AppColors.primary)),
++          ),
++        ],
+       ),
+     );
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/lib/features/auth/presentation/sign_up_screen.dart b/lib/features/auth/presentation/sign_up_screen.dart
+new file mode 100644
+index 0000000..70d647b
+--- /dev/null
++++ b/lib/features/auth/presentation/sign_up_screen.dart
+@@ -0,0 +1,251 @@
++import 'package:flutter/material.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:go_router/go_router.dart';
++import '../../../app/theme.dart';
++import '../../../core/utils/validators.dart';
++import '../../../core/widgets/primary_button.dart';
++import '../data/auth_repository.dart';
++
++class SignUpScreen extends ConsumerStatefulWidget {
++  const SignUpScreen({super.key});
++
++  @override
++  ConsumerState<SignUpScreen> createState() => _SignUpScreenState();
++}
++
++class _SignUpScreenState extends ConsumerState<SignUpScreen> {
++  final _formKey = GlobalKey<FormState>();
++  final _nameCtrl = TextEditingController();
++  final _emailCtrl = TextEditingController();
++  final _passwordCtrl = TextEditingController();
++  final _confirmCtrl = TextEditingController();
++
++  bool _isLoading = false;
++  bool _obscurePassword = true;
++  bool _obscureConfirm = true;
++  String? _errorMessage;
++
++  @override
++  void dispose() {
++    _nameCtrl.dispose();
++    _emailCtrl.dispose();
++    _passwordCtrl.dispose();
++    _confirmCtrl.dispose();
++    super.dispose();
++  }
++
++  Future<void> _submit() async {
++    if (!_formKey.currentState!.validate()) return;
++    setState(() {
++      _isLoading = true;
++      _errorMessage = null;
++    });
++
++    try {
++      await ref.read(authRepositoryProvider).signUpWithEmail(
++            email: _emailCtrl.text.trim(),
++            password: _passwordCtrl.text,
++            displayName: _nameCtrl.text.trim(),
++          );
++      if (mounted) context.go('/onboarding/anniversary');
++    } on Exception catch (e) {
++      setState(() => _errorMessage = _friendlyError(e.toString()));
++    } finally {
++      if (mounted) setState(() => _isLoading = false);
++    }
++  }
++
++  String _friendlyError(String raw) {
++    if (raw.contains('email-already-in-use')) {
++      return 'Email sudah terdaftar. Coba masuk atau gunakan email lain.';
++    }
++    if (raw.contains('weak-password')) {
++      return 'Password terlalu lemah. Gunakan minimal 8 karakter.';
++    }
++    if (raw.contains('network-request-failed')) {
++      return 'Tidak ada koneksi internet. Coba lagi.';
++    }
++    return 'Terjadi kesalahan. Coba lagi.';
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      backgroundColor: AppColors.background,
++      appBar: AppBar(
++        backgroundColor: AppColors.background,
++        elevation: 0,
++        leading: IconButton(
++          icon: const Icon(Icons.arrow_back, color: AppColors.textPrimary),
++          onPressed: () => context.pop(),
++        ),
++      ),
++      body: SafeArea(
++        child: SingleChildScrollView(
++          padding: const EdgeInsets.all(24),
++          child: Form(
++            key: _formKey,
++            child: Column(
++              crossAxisAlignment: CrossAxisAlignment.start,
++              children: [
++                const SizedBox(height: 8),
++                const Text(
++                  'Buat akun',
++                  style: TextStyle(
++                    fontSize: 24,
++                    fontWeight: FontWeight.w600,
++                    color: AppColors.textPrimary,
++                  ),
++                ),
++                const SizedBox(height: 8),
++                const Text(
++                  'Masukkan data kamu untuk mulai.',
++                  style: TextStyle(
++                    fontSize: 14,
++                    color: AppColors.textSecondary,
++                  ),
++                ),
++                const SizedBox(height: 32),
++
++                // Error banner
++                if (_errorMessage != null) ...[
++                  Container(
++                    width: double.infinity,
++                    padding: const EdgeInsets.all(12),
++                    decoration: BoxDecoration(
++                      color: AppColors.error.withOpacity(0.1),
++                      borderRadius: BorderRadius.circular(12),
++                      border: Border.all(
++                          color: AppColors.error.withOpacity(0.3)),
++                    ),
++                    child: Text(
++                      _errorMessage!,
++                      style: const TextStyle(
++                          color: AppColors.error, fontSize: 13),
++                    ),
++                  ),
++                  const SizedBox(height: 20),
++                ],
++
++                // Nama
++                const Text('Nama',
++                    style: TextStyle(
++                        fontSize: 13,
++                        fontWeight: FontWeight.w500,
++                        color: AppColors.textPrimary)),
++                const SizedBox(height: 6),
++                TextFormField(
++                  controller: _nameCtrl,
++                  textCapitalization: TextCapitalization.words,
++                  decoration: const InputDecoration(hintText: 'Nama kamu'),
++                  validator: Validators.displayName,
++                  textInputAction: TextInputAction.next,
++                ),
++                const SizedBox(height: 16),
++
++                // Email
++                const Text('Email',
++                    style: TextStyle(
++                        fontSize: 13,
++                        fontWeight: FontWeight.w500,
++                        color: AppColors.textPrimary)),
++                const SizedBox(height: 6),
++                TextFormField(
++                  controller: _emailCtrl,
++                  keyboardType: TextInputType.emailAddress,
++                  autocorrect: false,
++                  decoration: const InputDecoration(hintText: 'email@kamu.com'),
++                  validator: Validators.email,
++                  textInputAction: TextInputAction.next,
++                ),
++                const SizedBox(height: 16),
++
++                // Password
++                const Text('Password',
++                    style: TextStyle(
++                        fontSize: 13,
++                        fontWeight: FontWeight.w500,
++                        color: AppColors.textPrimary)),
++                const SizedBox(height: 6),
++                TextFormField(
++                  controller: _passwordCtrl,
++                  obscureText: _obscurePassword,
++                  decoration: InputDecoration(
++                    hintText: 'Minimal 8 karakter',
++                    suffixIcon: IconButton(
++                      icon: Icon(_obscurePassword
++                          ? Icons.visibility_off_outlined
++                          : Icons.visibility_outlined),
++                      color: AppColors.textTertiary,
++                      onPressed: () => setState(
++                          () => _obscurePassword = !_obscurePassword),
++                    ),
++                  ),
++                  validator: Validators.password,
++                  textInputAction: TextInputAction.next,
++                ),
++                const SizedBox(height: 16),
++
++                // Konfirmasi password
++                const Text('Konfirmasi password',
++                    style: TextStyle(
++                        fontSize: 13,
++                        fontWeight: FontWeight.w500,
++                        color: AppColors.textPrimary)),
++                const SizedBox(height: 6),
++                TextFormField(
++                  controller: _confirmCtrl,
++                  obscureText: _obscureConfirm,
++                  decoration: InputDecoration(
++                    hintText: 'Ulangi password',
++                    suffixIcon: IconButton(
++                      icon: Icon(_obscureConfirm
++                          ? Icons.visibility_off_outlined
++                          : Icons.visibility_outlined),
++                      color: AppColors.textTertiary,
++                      onPressed: () =>
++                          setState(() => _obscureConfirm = !_obscureConfirm),
++                    ),
++                  ),
++                  validator: (v) =>
++                      Validators.confirmPassword(v, _passwordCtrl.text),
++                  textInputAction: TextInputAction.done,
++                  onFieldSubmitted: (_) => _submit(),
++                ),
++                const SizedBox(height: 32),
++
++                PrimaryButton(
++                  label: 'Buat akun',
++                  onPressed: _submit,
++                  isLoading: _isLoading,
++                ),
++                const SizedBox(height: 16),
++
++                Center(
++                  child: TextButton(
++                    onPressed: () => context.go('/sign-in'),
++                    child: const Text.rich(
++                      TextSpan(
++                        text: 'Sudah punya akun? ',
++                        style: TextStyle(
++                            color: AppColors.textSecondary, fontSize: 13),
++                        children: [
++                          TextSpan(
++                            text: 'Masuk',
++                            style: TextStyle(
++                                color: AppColors.primary,
++                                fontWeight: FontWeight.w500),
++                          ),
++                        ],
++                      ),
++                    ),
++                  ),
++                ),
++              ],
++            ),
++          ),
++        ),
++      ),
++    );
++  }
++}
+diff --git a/lib/features/onboarding/presentation/anniversary_screen.dart b/lib/features/onboarding/presentation/anniversary_screen.dart
+new file mode 100644
+index 0000000..5f538df
+--- /dev/null
++++ b/lib/features/onboarding/presentation/anniversary_screen.dart
+@@ -0,0 +1,251 @@
++import 'package:cloud_firestore/cloud_firestore.dart';
++import 'package:flutter/material.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:go_router/go_router.dart';
++import '../../../app/theme.dart';
++import '../../../core/utils/date_helpers.dart';
++import '../../../core/widgets/primary_button.dart';
++import '../../../features/auth/data/auth_repository.dart';
++
++class AnniversaryScreen extends ConsumerStatefulWidget {
++  const AnniversaryScreen({super.key});
++
++  @override
++  ConsumerState<AnniversaryScreen> createState() => _AnniversaryScreenState();
++}
++
++class _AnniversaryScreenState extends ConsumerState<AnniversaryScreen> {
++  DateTime? _selectedDate;
++  bool _isLoading = false;
++
++  Future<void> _pickDate() async {
++    final now = DateTime.now();
++    final picked = await showDatePicker(
++      context: context,
++      initialDate: _selectedDate ?? now.subtract(const Duration(days: 365)),
++      firstDate: DateTime(2000),
++      lastDate: now,
++      locale: const Locale('id', 'ID'),
++      builder: (context, child) {
++        return Theme(
++          data: Theme.of(context).copyWith(
++            colorScheme: const ColorScheme.light(
++              primary: AppColors.primary,
++              onPrimary: Colors.white,
++              surface: Colors.white,
++              onSurface: AppColors.textPrimary,
++            ),
++          ),
++          child: child!,
++        );
++      },
++    );
++    if (picked != null) {
++      setState(() => _selectedDate = picked);
++    }
++  }
++
++  Future<void> _save() async {
++    if (_selectedDate == null) return;
++    if (_selectedDate!.isAfter(DateTime.now())) {
++      ScaffoldMessenger.of(context).showSnackBar(
++        const SnackBar(content: Text('Tanggal jadian tidak bisa di masa depan.')),
++      );
++      return;
++    }
++
++    setState(() => _isLoading = true);
++    try {
++      final authRepo = ref.read(authRepositoryProvider);
++      final uid = authRepo.authService.currentUser?.uid;
++      if (uid == null) throw Exception('User tidak ditemukan');
++
++      // Simpan anniversaryDate sementara di user doc
++      // Nanti dipindah ke couple doc saat pairing
++      await ref.read(firestoreServiceProvider).users.doc(uid).update({
++        'pendingAnniversaryDate': Timestamp.fromDate(_selectedDate!),
++        'updatedAt': FieldValue.serverTimestamp(),
++      });
++
++      if (mounted) context.go('/onboarding/invite-partner');
++    } catch (e) {
++      if (mounted) {
++        ScaffoldMessenger.of(context).showSnackBar(
++          const SnackBar(content: Text('Gagal menyimpan. Coba lagi.')),
++        );
++      }
++    } finally {
++      if (mounted) setState(() => _isLoading = false);
++    }
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    final daysSince = _selectedDate != null
++        ? DateHelpers.daysSince(_selectedDate!)
++        : null;
++
++    return Scaffold(
++      backgroundColor: AppColors.background,
++      body: SafeArea(
++        child: Padding(
++          padding: const EdgeInsets.all(24),
++          child: Column(
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              const SizedBox(height: 16),
++
++              // Step indicator
++              Row(
++                children: List.generate(3, (i) => Expanded(
++                  child: Container(
++                    height: 4,
++                    margin: EdgeInsets.only(right: i < 2 ? 6 : 0),
++                    decoration: BoxDecoration(
++                      color: i == 0 ? AppColors.primary : AppColors.primaryMid,
++                      borderRadius: BorderRadius.circular(2),
++                    ),
++                  ),
++                )),
++              ),
++              const SizedBox(height: 32),
++
++              const Text(
++                'Kapan kalian jadian?',
++                style: TextStyle(
++                  fontSize: 24,
++                  fontWeight: FontWeight.w600,
++                  color: AppColors.textPrimary,
++                ),
++              ),
++              const SizedBox(height: 8),
++              const Text(
++                'Tanggal ini akan jadi counter spesial kalian.',
++                style: TextStyle(
++                  fontSize: 14,
++                  color: AppColors.textSecondary,
++                ),
++              ),
++              const SizedBox(height: 40),
++
++              // Date picker card
++              GestureDetector(
++                onTap: _pickDate,
++                child: Container(
++                  width: double.infinity,
++                  padding: const EdgeInsets.all(20),
++                  decoration: BoxDecoration(
++                    color: AppColors.surface,
++                    borderRadius: BorderRadius.circular(16),
++                    border: Border.all(
++                      color: _selectedDate != null
++                          ? AppColors.primary
++                          : AppColors.border,
++                      width: _selectedDate != null ? 1.5 : 1,
++                    ),
++                  ),
++                  child: Row(
++                    children: [
++                      Container(
++                        width: 44,
++                        height: 44,
++                        decoration: BoxDecoration(
++                          color: AppColors.primaryLight,
++                          borderRadius: BorderRadius.circular(12),
++                        ),
++                        child: const Icon(
++                          Icons.calendar_today_outlined,
++                          color: AppColors.primary,
++                          size: 20,
++                        ),
++                      ),
++                      const SizedBox(width: 16),
++                      Expanded(
++                        child: _selectedDate == null
++                            ? const Text(
++                                'Pilih tanggal',
++                                style: TextStyle(
++                                  color: AppColors.textTertiary,
++                                  fontSize: 15,
++                                ),
++                              )
++                            : Column(
++                                crossAxisAlignment: CrossAxisAlignment.start,
++                                children: [
++                                  Text(
++                                    DateHelpers.formatDate(_selectedDate!),
++                                    style: const TextStyle(
++                                      fontSize: 15,
++                                      fontWeight: FontWeight.w500,
++                                      color: AppColors.textPrimary,
++                                    ),
++                                  ),
++                                  if (daysSince != null)
++                                    Text(
++                                      '$daysSince hari yang lalu',
++                                      style: const TextStyle(
++                                        fontSize: 12,
++                                        color: AppColors.textSecondary,
++                                      ),
++                                    ),
++                                ],
++                              ),
++                      ),
++                      const Icon(
++                        Icons.chevron_right,
++                        color: AppColors.textTertiary,
++                      ),
++                    ],
++                  ),
++                ),
++              ),
++
++              // Preview counter
++              if (_selectedDate != null && daysSince != null) ...[
++                const SizedBox(height: 24),
++                Container(
++                  width: double.infinity,
++                  padding: const EdgeInsets.all(20),
++                  decoration: BoxDecoration(
++                    color: AppColors.primaryLight,
++                    borderRadius: BorderRadius.circular(16),
++                  ),
++                  child: Column(
++                    children: [
++                      Text(
++                        '$daysSince',
++                        style: const TextStyle(
++                          fontSize: 48,
++                          fontWeight: FontWeight.w700,
++                          color: AppColors.primary,
++                          height: 1,
++                        ),
++                      ),
++                      const SizedBox(height: 4),
++                      const Text(
++                        'hari bersama',
++                        style: TextStyle(
++                          fontSize: 14,
++                          color: AppColors.primaryDark,
++                        ),
++                      ),
++                    ],
++                  ),
++                ),
++              ],
++
++              const Spacer(),
++
++              PrimaryButton(
++                label: 'Lanjut',
++                onPressed: _selectedDate != null ? _save : null,
++                isLoading: _isLoading,
++              ),
++              const SizedBox(height: 8),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++}
+diff --git a/lib/features/onboarding/presentation/invite_partner_screen.dart b/lib/features/onboarding/presentation/invite_partner_screen.dart
+new file mode 100644
+index 0000000..315ba7a
+--- /dev/null
++++ b/lib/features/onboarding/presentation/invite_partner_screen.dart
+@@ -0,0 +1,243 @@
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:go_router/go_router.dart';
++import '../../../app/theme.dart';
++import '../../../features/auth/data/auth_repository.dart';
++
++class InvitePartnerScreen extends ConsumerStatefulWidget {
++  const InvitePartnerScreen({super.key});
++
++  @override
++  ConsumerState<InvitePartnerScreen> createState() =>
++      _InvitePartnerScreenState();
++}
++
++class _InvitePartnerScreenState extends ConsumerState<InvitePartnerScreen> {
++  final _codeCtrl = TextEditingController();
++  String? _myCode;
++  bool _isCreating = false;
++  bool _isJoining = false;
++
++  @override
++  void initState() {
++    super.initState();
++    _initCouple();
++  }
++
++  Future<void> _initCouple() async {
++    setState(() => _isCreating = true);
++    try {
++      // TODO (Minggu 3): generate couple + invite code di Firestore
++      // Untuk sekarang tampilkan placeholder
++      await Future.delayed(const Duration(milliseconds: 500));
++      setState(() => _myCode = 'XXXX-XX');
++    } finally {
++      if (mounted) setState(() => _isCreating = false);
++    }
++  }
++
++  @override
++  void dispose() {
++    _codeCtrl.dispose();
++    super.dispose();
++  }
++
++  void _copyCode() {
++    if (_myCode == null) return;
++    Clipboard.setData(ClipboardData(text: _myCode!));
++    ScaffoldMessenger.of(context).showSnackBar(
++      const SnackBar(content: Text('Kode disalin!')),
++    );
++  }
++
++  @override
++  Widget build(BuildContext context) {
++    return Scaffold(
++      backgroundColor: AppColors.background,
++      body: SafeArea(
++        child: Padding(
++          padding: const EdgeInsets.all(24),
++          child: Column(
++            crossAxisAlignment: CrossAxisAlignment.start,
++            children: [
++              const SizedBox(height: 16),
++
++              // Step indicator
++              Row(
++                children: List.generate(3, (i) => Expanded(
++                  child: Container(
++                    height: 4,
++                    margin: EdgeInsets.only(right: i < 2 ? 6 : 0),
++                    decoration: BoxDecoration(
++                      color: i <= 1 ? AppColors.primary : AppColors.primaryMid,
++                      borderRadius: BorderRadius.circular(2),
++                    ),
++                  ),
++                )),
++              ),
++              const SizedBox(height: 32),
++
++              const Text(
++                'Undang pasangan',
++                style: TextStyle(
++                  fontSize: 24,
++                  fontWeight: FontWeight.w600,
++                  color: AppColors.textPrimary,
++                ),
++              ),
++              const SizedBox(height: 8),
++              const Text(
++                'Bagikan kode ini ke pasangan kamu, atau masukkan kode dari pasangan kamu.',
++                style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
++              ),
++              const SizedBox(height: 32),
++
++              // Kode saya
++              const Text(
++                'Kode undanganmu',
++                style: TextStyle(
++                  fontSize: 13,
++                  fontWeight: FontWeight.w500,
++                  color: AppColors.textSecondary,
++                ),
++              ),
++              const SizedBox(height: 8),
++              Container(
++                width: double.infinity,
++                padding: const EdgeInsets.all(20),
++                decoration: BoxDecoration(
++                  color: AppColors.primaryLight,
++                  borderRadius: BorderRadius.circular(16),
++                ),
++                child: _isCreating
++                    ? const Center(
++                        child: CircularProgressIndicator(
++                          color: AppColors.primary,
++                        ),
++                      )
++                    : Row(
++                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
++                        children: [
++                          Text(
++                            _myCode ?? '-',
++                            style: const TextStyle(
++                              fontSize: 28,
++                              fontWeight: FontWeight.w700,
++                              color: AppColors.primary,
++                              letterSpacing: 4,
++                            ),
++                          ),
++                          IconButton(
++                            onPressed: _copyCode,
++                            icon: const Icon(Icons.copy_outlined),
++                            color: AppColors.primary,
++                          ),
++                        ],
++                      ),
++              ),
++              const SizedBox(height: 8),
++              const Text(
++                'Kode berlaku 24 jam.',
++                style: TextStyle(fontSize: 12, color: AppColors.textTertiary),
++              ),
++              const SizedBox(height: 32),
++
++              // Divider
++              Row(
++                children: [
++                  const Expanded(
++                      child: Divider(color: AppColors.border)),
++                  Padding(
++                    padding: const EdgeInsets.symmetric(horizontal: 12),
++                    child: Text('atau',
++                        style: TextStyle(
++                            fontSize: 12, color: AppColors.textTertiary)),
++                  ),
++                  const Expanded(child: Divider(color: AppColors.border)),
++                ],
++              ),
++              const SizedBox(height: 24),
++
++              // Input kode partner
++              const Text(
++                'Punya kode dari pasangan?',
++                style: TextStyle(
++                  fontSize: 13,
++                  fontWeight: FontWeight.w500,
++                  color: AppColors.textSecondary,
++                ),
++              ),
++              const SizedBox(height: 8),
++              Row(
++                children: [
++                  Expanded(
++                    child: TextField(
++                      controller: _codeCtrl,
++                      textCapitalization: TextCapitalization.characters,
++                      decoration: const InputDecoration(
++                        hintText: 'Masukkan kode',
++                      ),
++                    ),
++                  ),
++                  const SizedBox(width: 12),
++                  ElevatedButton(
++                    onPressed: _isJoining ? null : _joinWithCode,
++                    style: ElevatedButton.styleFrom(
++                      padding: const EdgeInsets.symmetric(
++                          horizontal: 20, vertical: 16),
++                    ),
++                    child: _isJoining
++                        ? const SizedBox(
++                            height: 18,
++                            width: 18,
++                            child: CircularProgressIndicator(
++                                strokeWidth: 2,
++                                color: AppColors.primaryLight),
++                          )
++                        : const Text('Join'),
++                  ),
++                ],
++              ),
++
++              const Spacer(),
++
++              // Lewati dulu (bisa pairing nanti)
++              Center(
++                child: TextButton(
++                  onPressed: () => context.go('/home'),
++                  child: const Text(
++                    'Lewati dulu, undang nanti',
++                    style: TextStyle(
++                      color: AppColors.textSecondary,
++                      fontSize: 13,
++                    ),
++                  ),
++                ),
++              ),
++            ],
++          ),
++        ),
++      ),
++    );
++  }
++
++  Future<void> _joinWithCode() async {
++    final code = _codeCtrl.text.trim().toUpperCase();
++    if (code.isEmpty) return;
++
++    setState(() => _isJoining = true);
++    try {
++      // TODO (Minggu 3): implement pairing logic
++      await Future.delayed(const Duration(seconds: 1));
++      if (mounted) {
++        ScaffoldMessenger.of(context).showSnackBar(
++          const SnackBar(
++              content: Text('Fitur pairing akan diimplementasi Minggu 3.')),
++        );
++      }
++    } finally {
++      if (mounted) setState(() => _isJoining = false);
++    }
++  }
++}
+diff --git a/lib/features/onboarding/presentation/splash_screen.dart b/lib/features/onboarding/presentation/splash_screen.dart
+index f188c2a..4315bba 100644
+--- a/lib/features/onboarding/presentation/splash_screen.dart
++++ b/lib/features/onboarding/presentation/splash_screen.dart
+@@ -1,23 +1,49 @@
+ import 'dart:async';
+ import 'package:flutter/material.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
+ import 'package:go_router/go_router.dart';
+ import '../../../app/theme.dart';
++import '../../../features/auth/data/auth_repository.dart';
+ 
+-class SplashScreen extends StatefulWidget {
++class SplashScreen extends ConsumerStatefulWidget {
+   const SplashScreen({super.key});
+ 
+   @override
+-  State<SplashScreen> createState() => _SplashScreenState();
++  ConsumerState<SplashScreen> createState() => _SplashScreenState();
+ }
+ 
+-class _SplashScreenState extends State<SplashScreen> {
++class _SplashScreenState extends ConsumerState<SplashScreen> {
+   @override
+   void initState() {
+     super.initState();
+-    // Auto navigate ke welcome setelah 1.5 detik
+-    Timer(const Duration(milliseconds: 1500), () {
+-      if (mounted) context.go('/welcome');
+-    });
++    Timer(const Duration(milliseconds: 1500), _navigate);
++  }
++
++  void _navigate() {
++    if (!mounted) return;
++    final authState = ref.read(authStateProvider);
++    authState.when(
++      data: (user) {
++        if (user != null) {
++          // Cek apakah user sudah pair atau belum
++          ref.read(currentUserProvider).when(
++            data: (appUser) {
++              if (appUser?.coupleId != null) {
++                context.go('/home');
++              } else {
++                context.go('/onboarding/anniversary');
++              }
++            },
++            loading: () => context.go('/home'),
++            error: (_, __) => context.go('/welcome'),
++          );
++        } else {
++          context.go('/welcome');
++        }
++      },
++      loading: () => context.go('/welcome'),
++      error: (_, __) => context.go('/welcome'),
++    );
+   }
+ 
+   @override
+@@ -31,7 +57,7 @@ class _SplashScreenState extends State<SplashScreen> {
+             Container(
+               width: 80,
+               height: 80,
+-              decoration: BoxDecoration(
++              decoration: const BoxDecoration(
+                 color: AppColors.primaryLight,
+                 shape: BoxShape.circle,
+               ),
+@@ -63,4 +89,4 @@ class _SplashScreenState extends State<SplashScreen> {
+       ),
+     );
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/lib/features/onboarding/presentation/welcome_screen.dart b/lib/features/onboarding/presentation/welcome_screen.dart
+index 48cdb97..bd4bba2 100644
+--- a/lib/features/onboarding/presentation/welcome_screen.dart
++++ b/lib/features/onboarding/presentation/welcome_screen.dart
+@@ -1,8 +1,6 @@
+ import 'package:flutter/material.dart';
+ import 'package:go_router/go_router.dart';
+ import '../../../app/theme.dart';
+-import 'package:cloud_firestore/cloud_firestore.dart';
+-
+ 
+ class WelcomeScreen extends StatelessWidget {
+   const WelcomeScreen({super.key});
+@@ -27,7 +25,6 @@ class WelcomeScreen extends StatelessWidget {
+                 child: const Icon(Icons.photo_library_outlined,
+                     size: 56, color: AppColors.primary),
+               ),
+-
+               const SizedBox(height: 32),
+               const Text(
+                 'Simpan setiap momen',
+@@ -37,47 +34,33 @@ class WelcomeScreen extends StatelessWidget {
+               const Text(
+                 'Foto, rencana, dan catatan — semua di satu tempat yang cuma kalian punya.',
+                 textAlign: TextAlign.center,
+-                style: TextStyle(fontSize: 14, color: AppColors.textSecondary),
++                style:
++                    TextStyle(fontSize: 14, color: AppColors.textSecondary),
+               ),
+               const Spacer(),
+-TextButton(
+-  onPressed: () async {
+-    try {
+-      // Write test doc
+-      await FirebaseFirestore.instance
+-        .collection('test')
+-        .doc('connection')
+-        .set({
+-          'message': 'Halo Firebase!',
+-          'timestamp': FieldValue.serverTimestamp(),
+-        });
+-
+-      // Read kembali
+-      final doc = await FirebaseFirestore.instance
+-        .collection('test')
+-        .doc('connection')
+-        .get();
+-
+-      if (context.mounted) {
+-        ScaffoldMessenger.of(context).showSnackBar(
+-          SnackBar(content: Text('Firebase connected! Data: ${doc.data()}')),
+-        );
+-      }
+-    } catch (e) {
+-      if (context.mounted) {
+-        ScaffoldMessenger.of(context).showSnackBar(
+-          SnackBar(content: Text('Error: $e')),
+-        );
+-      }
+-    }
+-  },
+-  child: const Text('Test Firebase'),
+-),
+               SizedBox(
+                 width: double.infinity,
+                 child: ElevatedButton(
+                   onPressed: () => context.go('/sign-in'),
+-                  child: const Text('Lanjut'),
++                  child: const Text('Masuk'),
++                ),
++              ),
++              const SizedBox(height: 12),
++              SizedBox(
++                width: double.infinity,
++                child: OutlinedButton(
++                  onPressed: () => context.go('/sign-up'),
++                  style: OutlinedButton.styleFrom(
++                    foregroundColor: AppColors.primary,
++                    side: const BorderSide(color: AppColors.primary),
++                    padding: const EdgeInsets.symmetric(
++                        horizontal: 24, vertical: 14),
++                    shape: RoundedRectangleBorder(
++                        borderRadius: BorderRadius.circular(12)),
++                    textStyle: const TextStyle(
++                        fontSize: 14, fontWeight: FontWeight.w500),
++                  ),
++                  child: const Text('Buat akun'),
+                 ),
+               ),
+             ],
+@@ -86,4 +69,4 @@ TextButton(
+       ),
+     );
+   }
+-}
+\ No newline at end of file
++}
+diff --git a/lib/main.dart b/lib/main.dart
+index f1dce32..989001a 100644
+--- a/lib/main.dart
++++ b/lib/main.dart
+@@ -5,18 +5,15 @@ import 'firebase_options.dart';
+ import 'app/app.dart';
+ 
+ void main() async {
+-  // Pastikan binding sudah siap sebelum init Firebase
+   WidgetsFlutterBinding.ensureInitialized();
+ 
+-  // Init Firebase
+   await Firebase.initializeApp(
+     options: DefaultFirebaseOptions.currentPlatform,
+   );
+ 
+-  // Run app dengan Riverpod scope
+   runApp(
+     const ProviderScope(
+       child: BerduaApp(),
+     ),
+   );
+-}
+\ No newline at end of file
++}
+diff --git a/pubspec.yaml b/pubspec.yaml
+index f06bfa5..bbdf5bf 100644
+--- a/pubspec.yaml
++++ b/pubspec.yaml
+@@ -9,6 +9,8 @@ environment:
+ dependencies:
+   flutter:
+     sdk: flutter
++  flutter_localizations:
++    sdk: flutter
+   cupertino_icons: ^1.0.6
+ 
+   # Firebase
+-- 
+2.43.0
+
