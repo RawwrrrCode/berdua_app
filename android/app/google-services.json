@@ -1,0 +1,46 @@
+{
+  "project_info": {
+    "project_number": "336632968343",
+    "project_id": "berdua-dev",
+    "storage_bucket": "berdua-dev.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:336632968343:android:3dbc313e69a52f3d7325d2",
+        "android_client_info": {
+          "package_name": "com.berdua.berdua"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "336632968343-3c608a5gf682205v88tmgji6jsjke5t3.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDHW3yyGtbAgjboo5zFD3Er2Wfv1F3i5FQ"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "336632968343-3c608a5gf682205v88tmgji6jsjke5t3.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "336632968343-5g4r7eciv75361icrqgvom4qc7s9re1h.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.berdua.berdua"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
